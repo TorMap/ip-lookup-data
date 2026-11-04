@@ -1,0 +1,81 @@
+name: release
+
+# Mirrors the monthly DB-IP Lite databases into an immutable GitHub release named after the month (e.g. 2026-11).
+# DB-IP publishes on the 1st of each month. Later runs in the same month do nothing once the release exists.
+on:
+  schedule:
+    - cron: '17 6 2,9,16 * *'
+  workflow_dispatch:
+    inputs:
+      month:
+        description: 'Month to publish as YYYY-MM (default: current month). DB-IP only keeps about the last two months.'
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload its assets
+    steps:
+      - name: Download, verify and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          MONTH_INPUT: ${{ inputs.month }}
+        run: |
+          set -euo pipefail
+          month="${MONTH_INPUT:-$(date -u +%Y-%m)}"
+          if [[ ! "$month" =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]]; then
+            echo "::error::Invalid month '$month', expected YYYY-MM"
+            exit 1
+          fi
+          if gh release view "$month" >/dev/null 2>&1; then
+            echo "Release $month already exists, nothing to do."
+            exit 0
+          fi
+
+          work="$(mktemp -d)"
+          cd "$work"
+          declare -A types=([city]='DBIP-City-Lite' [asn]='DBIP-ASN-Lite')
+          for db in city asn; do
+            file="dbip-$db-lite.mmdb.gz"
+            url="https://download.db-ip.com/free/dbip-$db-lite-$month.mmdb.gz"
+            if ! curl -fsSL --retry 3 --retry-delay 10 -o "$file" "$url"; then
+              echo "::warning::$url is not available yet, try again later."
+              exit 0
+            fi
+            gzip -t "$file"
+            # MMDB metadata sits in the last 128 KiB of the file and names the database type.
+            if ! gzip -dc "$file" | tail -c 131072 | grep -aq "${types[$db]}"; then
+              echo "::error::$file is not a ${types[$db]} MMDB database"
+              exit 1
+            fi
+            echo "$file: $(stat -c %s "$file") bytes"
+          done
+          sha256sum dbip-*-lite.mmdb.gz > SHA256SUMS
+          cat SHA256SUMS
+
+          notes="$(cat <<EOF
+          DB-IP Lite databases for $month, unchanged from https://db-ip.com:
+
+          - \`dbip-city-lite.mmdb.gz\`: [IP to City Lite](https://db-ip.com/db/download/ip-to-city-lite)
+          - \`dbip-asn-lite.mmdb.gz\`: [IP to ASN Lite](https://db-ip.com/db/download/ip-to-asn-lite)
+
+          Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) by [DB-IP.com](https://db-ip.com).
+
+          SHA-256:
+          \`\`\`
+          $(cat SHA256SUMS)
+          \`\`\`
+          EOF
+          )"
+          # gh uploads the assets to a draft first and then publishes it, which immutable releases require.
+          gh release create "$month" dbip-city-lite.mmdb.gz dbip-asn-lite.mmdb.gz SHA256SUMS \
+            --title "DB-IP Lite $month" --notes "$notes" --latest
