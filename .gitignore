@@ -1,0 +1,16 @@
+# Secrets, keys and local environment files
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Downloaded databases are published as release assets, never committed
+*.mmdb
+*.mmdb.gz
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
